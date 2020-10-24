@@ -1,0 +1,679 @@
+import numpy as np
+import pandas as pd
+import math
+import gc
+from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
+# from fancyimpute import KNN
+from sklearn.metrics import f1_score
+from sklearn.metrics import accuracy_score, mean_absolute_error, matthews_corrcoef, mean_squared_error
+from sklearn.metrics import cohen_kappa_score
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import recall_score
+from sklearn.metrics import precision_score
+from sklearn.metrics import roc_auc_score
+from sklearn import datasets
+from sklearn.model_selection import train_test_split, GridSearchCV
+from scipy.spatial.distance import cdist
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+from sklearn.preprocessing import MinMaxScaler,StandardScaler
+from scipy.spatial import distance
+from sklearn.impute import SimpleImputer
+from fancyimpute import KNN,IterativeImputer, SoftImpute
+# import scipy.stats as stats
+from sklearn.metrics import classification_report, plot_confusion_matrix
+import time
+
+timestr = time.strftime("%Y%m%d-%H%M%S")
+dataset_name = 'iris'
+scaler_name='MinMax'
+classifier_name='SVM'
+missing_percentage_list = [80.0]  # ,20.0,30.0,40.0]#,20.0,30.0,40.0]#,20.0,30.0]#,70.0,80.0]# ,70.0]#,30.0]#,40.0,50.0,60.0,70.0,80.0]
+# missing_percentage_list=[10.0]#,10.0]#,10.0,10.0,10.0,10.0,10.0,10.0]
+round_digit = 5
+max_iter = 100
+num_searchagent = 30
+repeat_number=1
+
+# best_param= SVC(C=10.0,gamma=1.0,kernel="rbf")
+"""grid_svm = [{'kernel': ['rbf'], 'gamma': np.logspace(-3, 2, 6), 'C': np.logspace(-3, 2, 6)},
+            {'kernel': ['linear'], 'C': np.logspace(-3, 2, 6)},
+            {'kernel': ['poly'], 'gamma': np.logspace(-3, 2, 6), 'C': np.logspace(-3, 2, 6)}]
+grid_logistic = [{'C': np.logspace(-3, 2, 6), 'penalty': ['l1', 'l2'], 'solver': ['liblinear']},
+                 {'C': np.logspace(-3, 2, 6), 'penalty': ['l2'], 'solver': ['newton-cg', 'lbfgs']}]"""
+
+
+
+def classifier_selection(scaler_name, model, X_train_set, y_train_set, X_test_set):
+    if scaler_name == 'MinMax':
+        scaler_selection = MinMaxScaler()
+        scaler_selection.fit(X_train_set)
+        X_train_scaled = pd.DataFrame(scaler_selection.transform(X_train_set), index=X_train_set.index,
+                                      columns=X_train_set.columns)
+
+        X_test_scaled = pd.DataFrame(scaler_selection.transform(X_test_set), index=X_test_set.index,
+                                     columns=X_test_set.columns)
+    if scaler_name == 'StandardScaler':
+        scaler_selection = StandardScaler()
+        scaler_selection.fit(X_train_set)
+        X_train_scaled = pd.DataFrame(scaler_selection.transform(X_train_set), index=X_train_set.index,
+                                      columns=X_train_set.columns)
+
+        X_test_scaled = pd.DataFrame(scaler_selection.transform(X_test_set), index=X_test_set.index,
+                                     columns=X_test_set.columns)
+    if scaler_name == 'None':
+        X_train_scaled = X_train_set.copy()
+        X_test_scaled = X_test_set.copy()
+
+    if model == 'SVM':
+        grid = [{'kernel': ['rbf'], 'gamma': [1e-3, 1e-4], 'C': [1, 10, 100, 1000]},
+                {'kernel': ['linear'], 'C': [1, 10, 100, 1000]},
+                {'kernel': ['poly'], 'gamma': [1e-3, 1e-4], 'C': [1, 10, 100, 1000]}]
+        grid_clf = GridSearchCV(SVC(), param_grid=grid, cv=10, scoring='accuracy', refit=True)
+        grid_clf.fit(X_train_scaled, y_train_set)
+        best_parameter_clf = SVC(**grid_clf.best_params_)
+
+        model_svm = grid_clf.best_estimator_
+        model_svm.fit(X_train_scaled, y_train_set)
+        y_pred_train = model_svm.predict(X_train_scaled)
+        y_pred_test = model_svm.predict(X_test_scaled)
+    if model == 'LR':
+        grid = [{'C': np.logspace(-3, 2, 6), 'penalty': ['l1', 'l2'], 'solver': ['liblinear']},
+                {'C': np.logspace(-3, 2, 6), 'penalty': ['l2'], 'solver': ['newton-cg', 'lbfgs']}]
+        grid_clf = GridSearchCV(LogisticRegression(), param_grid=grid, cv=10, scoring='accuracy', refit=True)
+        grid_clf.fit(X_train_scaled, y_train_set)
+        best_parameter_clf = LogisticRegression(**grid_clf.best_params_)
+        model_lr = grid_clf.best_estimator_
+        model_lr.fit(X_train_scaled, y_train_set)
+        y_pred_train = model_lr.predict(X_train_scaled)
+        y_pred_test = model_lr.predict(X_test_scaled)
+    return y_pred_train, y_pred_test,best_parameter_clf
+
+
+
+
+def mean_absolute_percentage_error(y_true, y_pred):
+    y_true, y_pred = np.array(y_true), np.array(y_pred)
+    return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+
+
+def whale_optimization_algorithm(num_searchagent, max_iter, dimension, upper_bound, lower_bound, X_train, y_train,
+                                 X_test, y_test, round_digit,missing_index):
+    def fitness_function(agent, X_train, y_train, missing_index, X_test, y_test):
+
+        for i in range(agent.shape[0]):
+            X_train_copy = X_train.copy()
+            counter = -1
+            obj_distance = 0
+            total_min = 0
+            for j in missing_index:
+                if counter < (agent.shape[1] - 3):
+                    counter += 1
+                    X_train_copy.iloc[j[0], j[1]] = agent.iloc[i, counter]
+
+            scaler_fitness = MinMaxScaler()
+            scaler_fitness.fit(X_train)
+            X_train_copy_scaled = pd.DataFrame(scaler_fitness.transform(X_train_copy), index=X_train_copy.index,
+                                               columns=X_train_copy.columns)
+            X_test_copy_scaled = pd.DataFrame(scaler_fitness.transform(X_test), index=X_test.index,
+                                              columns=X_test.columns)
+            clf = best_param
+            # X_test_final = pd.DataFrame(scaler.transform(X_test_final), index=X_test_final.index, columns=X_test_final.columns)
+            clf.fit(X_train_copy_scaled, y_train)
+            # X_test_scaled=pd.DataFrame(scaler_fitness.transform(X_test), index=X_test.index,columns=X_test.columns)
+            y_predict_train = clf.predict(X_train_copy_scaled)
+            # y_predict_test=clf.predict(X_test_scaled)
+            accuracy_score_train = accuracy_score(y_train, y_predict_train)
+            obj_accuracy = accuracy_score_train
+            agent.iloc[i, -3] = accuracy_score(y_test, clf.predict(X_test_copy_scaled))
+            agent.iloc[i, -2] = accuracy_score_train
+            agent.iloc[i, -1] = accuracy_score_train
+
+            del (X_train_copy, X_train_copy_scaled, X_test_copy_scaled)
+
+            gc.collect()
+
+        return agent
+
+    def fitness_function_aproximation(agent, X_train, y_train,missing_index,X_test,y_test,best_search_agent):
+
+
+
+        for i in range(agent.shape[0]):
+
+            if math.exp(-1*distance.euclidean(agent.iloc[i,0:-3],best_search_agent.iloc[0, 0:-3])/2)>0.8:
+
+                agent.iloc[i, -3] = best_search_agent.iloc[0, -3]
+                agent.iloc[i, -2] = best_search_agent.iloc[0, -2]
+                agent.iloc[i, -1] = best_search_agent.iloc[0, -1]
+
+
+                # print(1 / (1 + distance.euclidean(agent.iloc[i, 0:-3], best_search_agent.iloc[0, 0:-3])))
+                """X_train_copy = X_train.copy()
+                counter = -1
+                obj_distance = 0
+                total_min = 0
+
+                for j in missing_index:
+                    if counter < (agent.shape[1] - 3):
+                        counter += 1
+                        X_train_copy.iloc[j[0], j[1]] = agent.iloc[i, counter]
+
+                scaler_fitness = MinMaxScaler()
+                scaler_fitness.fit(X_train)
+                X_train_copy_scaled = pd.DataFrame(scaler_fitness.transform(X_train_copy), index=X_train_copy.index,
+                                                   columns=X_train_copy.columns)
+                X_test_copy_scaled = pd.DataFrame(scaler_fitness.transform(X_test), index=X_test.index,
+                                                  columns=X_test.columns)
+                clf = best_param
+                # X_test_final = pd.DataFrame(scaler.transform(X_test_final), index=X_test_final.index, columns=X_test_final.columns)
+                clf.fit(X_train_copy_scaled, y_train)
+                # X_test_scaled=pd.DataFrame(scaler_fitness.transform(X_test), index=X_test.index,columns=X_test.columns)
+                y_predict_train = clf.predict(X_train_copy_scaled)
+                # y_predict_test=clf.predict(X_test_scaled)
+                accuracy_score_train = accuracy_score(y_train, y_predict_train)
+                obj_accuracy = accuracy_score_train
+                agent.iloc[i, -3] = accuracy_score(y_test, clf.predict(X_test_copy_scaled))
+                agent.iloc[i, -2] = accuracy_score_train
+                agent.iloc[i, -1] = accuracy_score_train
+                timestrclassend = time.time()
+                savetime=savetime+(timestrclassend - timestrclass)
+
+                # print(accuracy_score_train)
+                # print(best_search_agent.iloc[0, -1])
+
+                del (X_train_copy, X_train_copy_scaled, X_test_copy_scaled)"""
+
+
+
+
+
+
+        else:
+
+
+                X_train_copy = X_train.copy()
+                counter = -1
+                obj_distance = 0
+                total_min = 0
+                for j in missing_index:
+                    if  counter < (agent.shape[1] - 3):
+                        counter += 1
+                        X_train_copy.iloc[j[0],j[1]]=agent.iloc[i, counter]
+
+
+                scaler_fitness = MinMaxScaler()
+                scaler_fitness.fit(X_train)
+                X_train_copy_scaled = pd.DataFrame(scaler_fitness.transform(X_train_copy), index=X_train_copy.index,
+                                                   columns=X_train_copy.columns)
+                X_test_copy_scaled=pd.DataFrame(scaler_fitness.transform(X_test), index=X_test.index,
+                                                   columns=X_test.columns)
+                clf = best_param
+                # X_test_final = pd.DataFrame(scaler.transform(X_test_final), index=X_test_final.index, columns=X_test_final.columns)
+                clf.fit(X_train_copy_scaled, y_train)
+                # X_test_scaled=pd.DataFrame(scaler_fitness.transform(X_test), index=X_test.index,columns=X_test.columns)
+                y_predict_train = clf.predict(X_train_copy_scaled)
+                # y_predict_test=clf.predict(X_test_scaled)
+                accuracy_score_train = accuracy_score(y_train, y_predict_train)
+                obj_accuracy = accuracy_score_train
+                agent.iloc[i, -3] = accuracy_score(y_test,clf.predict(X_test_copy_scaled))
+                agent.iloc[i, -2] = accuracy_score_train
+                agent.iloc[i, -1] = accuracy_score_train
+
+                #print(accuracy_score_train)
+                #print(best_search_agent.iloc[0, -1])
+
+
+                del (X_train_copy, X_train_copy_scaled,X_test_copy_scaled)
+
+
+
+                gc.collect()
+
+
+
+
+        return agent
+
+    def initial_search_agent_position(num_searchagent, upper_bound,
+                                      lower_bound):  # Initialize the positions of search agents
+
+
+
+        if len(upper_bound) != len(lower_bound): print("upper bound size must be equal to lower bound size")
+        position = pd.DataFrame(np.zeros((num_searchagent, len(upper_bound))))
+        position['Obj_distance'] = 0.0
+        position['Obj_accuracy'] = 0.0
+        position['Fitness'] = 0.0
+        for i in range(num_searchagent):
+            for j in range(len(lower_bound)):
+                position.iloc[i, j] = np.random.uniform(lower_bound[j], upper_bound[j])  # initial solution
+
+
+        fitness_function(position, X_train, y_train,missing_index,X_test,y_test)
+
+
+        return position
+    def best_search_agent_random(dimension, X_train, y_train, X_test,y_test,missing_index,search_agent):
+        best_search_agent = pd.DataFrame(np.zeros((1, dimension)))
+        best_search_agent['Obj_distance'] = 0.0
+        best_search_agent['Obj_accuracy'] = 0.0
+        best_search_agent['Fitness'] = 0.0
+        index = search_agent['Fitness'].idxmax()
+        best_search_agent.iloc[0, :] = search_agent.iloc[index, :]
+
+        return best_search_agent
+
+    def best_search_agent_position_mean(dimension, X_train, y_train, X_test,
+                                        y_test,missing_index):  # initialize  leader position vector with mean imputation
+
+        best_search_agent = pd.DataFrame(np.zeros((1, dimension)))
+        best_search_agent['Obj_distance'] = 0.0
+        best_search_agent['Obj_accuracy'] = 0.0
+        best_search_agent['Fitness'] = 0.0
+
+        #classmean
+        X = X_train.copy()
+        X['target'] = y_train
+        class_mean = [[X.iloc[:, j].groupby(X.iloc[:, -1]).mean().tolist()[i] for j in range(X_train.shape[1])] for i in
+                      (X['target'].unique().tolist())]
+        #classmean
+        X_train_fill_class_mean = X_train.copy()
+        counter = -1
+        for i in range(X_train.shape[0]):
+            for j in range(X_train.shape[1]):
+                if pd.isnull(X_train.iloc[i, j]) == True:
+                    counter = counter + 1
+                    class_index = y_train[i]
+                    X_train_fill_class_mean.iloc[i, j] = class_mean[class_index][j]
+                    if pd.isnull(X_train_fill_class_mean.iloc[i, j]) == True:
+                        X_train_fill_class_mean.iloc[i, j] = X_train_fill_class_mean.iloc[:,
+                                                             j].mean()  # class mean degeri bulunumayan oznitelikler icin ortalama ile doldurma
+                    best_search_agent.iloc[0, counter] = X_train_fill_class_mean.iloc[i, j]
+
+        scaler_bestsearch = MinMaxScaler()
+        scaler_bestsearch.fit(X_train_fill_class_mean)
+        X_train_fill_class_mean_scaled = pd.DataFrame(scaler_bestsearch.transform(X_train_fill_class_mean),
+                                                      index=X_train_fill_class_mean.index,
+                                                      columns=X_train_fill_class_mean.columns)
+
+        clf = best_param
+        clf.fit(X_train_fill_class_mean_scaled, y_train)
+        y_predict_mean = clf.predict(X_train_fill_class_mean_scaled)
+        score_mean = accuracy_score(y_train, y_predict_mean)
+        obj_accucary = score_mean
+        obj_distance = 0
+        best_search_agent['Obj_distance'] = obj_distance
+        best_search_agent['Obj_accuracy'] = obj_accucary
+        best_search_agent['Fitness'] = obj_accucary
+
+        return best_search_agent
+
+        #mean
+        """
+
+        X_train_fill_mean = X_train.copy()
+        for col in X_train_fill_mean.columns:
+            X_train_fill_mean[col].fillna(X_train_fill_mean[col].mean(), inplace=True)
+        counter = -1
+        for j in missing_index:
+                    counter = counter + 1
+                    best_search_agent.iloc[0, counter] = X_train_fill_mean.iloc[j[0],j[1]].to_numpy()
+
+
+
+
+
+        scaler_bestsearch = MinMaxScaler()
+        scaler_bestsearch.fit(X_train_fill_mean)
+        X_train_fill_mean_scaled = pd.DataFrame(scaler_bestsearch.transform(X_train_fill_mean),
+                                                index=X_train_fill_mean.index, columns=X_train_fill_mean.columns)
+
+        clf = best_param
+        clf.fit(X_train_fill_mean_scaled, y_train)
+        y_predict_mean = clf.predict(X_train_fill_mean_scaled)
+        score_mean = accuracy_score(y_train, y_predict_mean)
+
+        obj_accucary = score_mean
+        obj_distance = 0
+        best_search_agent['Obj_distance'] = obj_distance
+        best_search_agent['Obj_accuracy'] = obj_accucary
+        best_search_agent['Fitness'] = obj_accucary
+
+        return best_search_agent
+        
+
+        X_train_KNN=X_train.copy()
+        X_train_SVD = X_train.copy()
+        X_train_MICE=X_train.copy()
+        #KNN-------------------------------
+        X_train_fill_initial_knn = KNN(k=1).fit_transform(X_train_KNN)
+        X_train_fill_initial_knn = pd.DataFrame(X_train_fill_initial_knn)
+        scaler_bestsearch_knn = MinMaxScaler()
+        scaler_bestsearch_knn.fit(X_train_fill_initial_knn)
+        X_train_fill_scaled_knn = pd.DataFrame(scaler_bestsearch_knn.transform(X_train_fill_initial_knn),
+                                                index=X_train_fill_initial_knn.index,
+                                                columns=X_train_fill_initial_knn.columns)
+
+
+
+        initial_knn = best_param
+
+        initial_knn.fit(X_train_fill_scaled_knn, y_train)
+        y_predict_knn = initial_knn.predict(X_train_fill_scaled_knn)
+        score_knn=accuracy_score(y_train,y_predict_knn)
+        # -------------------------------
+
+        #for col in X_train_fill_mean.columns:
+        #    X_train_fill_mean[col].fillna(X_train_fill_mean[col].mean(), inplace=True)
+
+
+
+
+
+        # MICE-------------------------------
+        n_imputations = 5
+        X_train_fill_Iterative = []
+        for i in range(n_imputations):
+            imputer = IterativeImputer(n_iter=5, sample_posterior=True, random_state=i)
+            X_train_fill_Iterative.append(imputer.fit_transform(X_train_MICE))
+        X_train_fill_initial_MICE = np.mean(X_train_fill_Iterative, 0)
+        X_train_fill_initial_MICE = pd.DataFrame(X_train_fill_initial_MICE )
+
+        scaler_bestsearch_mice = MinMaxScaler()
+        scaler_bestsearch_mice.fit(X_train_fill_initial_MICE)
+        X_train_fill_mice_scaled = pd.DataFrame(scaler_bestsearch_mice.transform(X_train_fill_initial_MICE),
+                                                index=X_train_fill_initial_MICE.index,
+                                                columns=X_train_fill_initial_MICE.columns)
+
+
+
+        initial_mice = best_param
+        initial_mice.fit( X_train_fill_mice_scaled, y_train)
+        y_predict_mice = initial_mice.predict(X_train_fill_mice_scaled)
+        score_mice = accuracy_score(y_train, y_predict_mice)
+
+
+
+
+
+
+        # -------------------------------SVD
+        X_train_fill_initial_SVD = SoftImpute().fit_transform(X_train_SVD)
+        X_train_fill_initial_SVD = pd.DataFrame(X_train_fill_initial_SVD)
+
+        scaler_bestsearch_SVD = MinMaxScaler()
+        scaler_bestsearch_SVD.fit(X_train_fill_initial_SVD)
+        X_train_fill_SVD_scaled = pd.DataFrame(scaler_bestsearch_SVD.transform(X_train_fill_initial_SVD),
+                                                index=X_train_fill_initial_SVD.index,
+                                                columns=X_train_fill_initial_SVD.columns)
+
+
+
+        initial_SVD = best_param
+
+        initial_SVD.fit(X_train_fill_SVD_scaled, y_train)
+        y_predict_SVD = initial_mice.predict(X_train_fill_SVD_scaled)
+        score_SVD = accuracy_score(y_train, y_predict_SVD)
+        scores_initial=[score_mean,score_knn,score_knn,score_mice,score_SVD]
+
+        max_index = scores_initial.index(max(scores_initial))
+
+        if max_index==0:
+            X_train_fill_initial=X_train_fill_mean
+        elif max_index==1:
+            X_train_fill_initial = X_train_fill_initial_knn
+        elif max_index == 2:
+            X_train_fill_initial = X_train_fill_initial_MICE
+        else:
+            X_train_fill_initial = X_train_fill_initial_SVD
+
+
+        counter = -1
+        null_list = []
+        for i in range(X_train.shape[0]):
+            for j in range(X_train.shape[1]):
+                if pd.isnull(X_train.iloc[i, j]) == True:
+                    counter = counter + 1
+                    best_search_agent.iloc[0, counter] = X_train_fill_initial.iloc[i, j]
+                    if i not in null_list:
+                        null_list.append(i)
+
+        obj_accucary = max(scores_initial)
+        obj_distance=0
+        best_search_agent['Obj_distance']=obj_distance
+        best_search_agent['Obj_accuracy'] = obj_accucary
+        best_search_agent['Fitness']=obj_accucary
+        print(max_index)
+        return best_search_agent"""
+
+    def woa_search(max_iter, num_searchagent, dimension, best_search_agent, search_agent, upper_bound, lower_bound,
+                   round_digit):
+        start=time.time()
+        fitnesslist = []
+        obj_distancelist = []
+        obj_accuracylist = []
+        fitnesslist.append(best_search_agent.iloc[0, -1])
+        obj_accuracylist.append(best_search_agent.iloc[0, -2])
+        obj_distancelist.append(best_search_agent.iloc[0, -3])
+
+        t = 0
+        eps=0.01
+        while t < max_iter and best_search_agent.iloc[0, -1] <(1.0-eps):
+            for i in range(num_searchagent):
+                a = 2 - t * (2 / max_iter)  # a decreases linearly from 2 to 0
+                a2 = -1 + t * ((-1) / max_iter)
+                r1 = np.random.rand()
+                r2 = np.random.rand()
+                A = 2 * a * r1 - a
+                C = 2 * r2
+                b = 1
+                l = (a2 - 1) * (np.random.rand()) + 1  # l=np.random.rand() * 2 - 1
+                p = np.random.rand()
+                for j in range(dimension):
+                    D = 0
+                    if p < 0.5:
+                        if abs(A) < 1:
+                            D = abs(C * best_search_agent.iloc[0, j] - search_agent.iloc[i, j])
+                            search_agent.iloc[i, j] = round(best_search_agent.iloc[0, j] - A * D, round_digit)
+                            # update position by the  the Eq. (2.1)
+                            # print ( search_agent.iloc[i,j],"Eq. (2.1)")
+                        elif abs(A) >= 1:
+                            random_search_agent = np.random.randint(0, num_searchagent - 1)
+                            D = abs(C * search_agent.iloc[random_search_agent, j] - search_agent.iloc[i, j])
+                            search_agent.iloc[i, j] = round(search_agent.iloc[random_search_agent, j] - A * D,
+                                                            round_digit)
+                            # print(search_agent.iloc[i, j],"Eq. (2.8)")
+                            # update position by the  the Eq. (2.8) ,(2.7)
+                    elif (p >= 0.5):
+                        D = abs(best_search_agent.iloc[0, j] - search_agent.iloc[i, j])
+                        search_agent.iloc[i, j] = round(
+                            D * (math.exp(b * l)) * (math.cos(2 * math.pi * l)) + best_search_agent.iloc[0, j],
+                            round_digit)
+                        # print(search_agent.iloc[i, j],"Eq. (2.5)")
+                        # Update the position of the current search by the Eq. (2.5)
+
+            # Check if any search agent goes beyond the search space and amend it
+
+            for i in range(num_searchagent):  # Check if any search agent goes beyond the search space and amend it
+                for j in range(dimension):
+                    if search_agent.iloc[i, j] > upper_bound[j]:
+                        search_agent.iloc[i, j] = upper_bound[j]
+                    elif search_agent.iloc[i, j] < lower_bound[j]:
+                        search_agent.iloc[i, j] = lower_bound[j]
+
+            fitness_function_aproximation(search_agent, X_train, y_train,missing_index,X_test,y_test,best_search_agent)  # calculate fitness function of search agents
+            # Update X * if there is a better solution
+            if search_agent['Fitness'].max() > best_search_agent['Fitness'].max():  # Maximization problem
+                index = search_agent['Fitness'].idxmax()
+                best_search_agent.iloc[0, :] = search_agent.iloc[index, :]
+            fitnesslist.append(best_search_agent.iloc[0, -1])
+            obj_accuracylist.append(best_search_agent.iloc[0, -2])
+            obj_distancelist.append(best_search_agent.iloc[0, -3])
+            t = t + 1
+        end=time.time()
+        print(end-start,"woa_search")
+
+        return best_search_agent, fitnesslist, obj_distancelist, obj_accuracylist
+
+    #best_search_agent = best_search_agent_position_mean(dimension, X_train, y_train, X_test, y_test, missing_index)
+    search_agent = initial_search_agent_position(num_searchagent, upper_bound, lower_bound)
+    best_search_agent = best_search_agent_random(dimension, X_train, y_train, X_test, y_test, missing_index,search_agent)
+    # best_search_agent=best_search_agent_position(dimension)
+
+    best_search_agent, fitnesslist, obj_distancelist, obj_accuracylist = woa_search(max_iter, num_searchagent,
+                                                                                    dimension, best_search_agent,
+                                                                                    search_agent, upper_bound,
+                                                                                    lower_bound, round_digit)
+
+    X_train_fill_WOA = X_train.copy()
+    counter = -1
+    for j in missing_index:
+        if counter < (best_search_agent.shape[1] - 3):
+            counter += 1
+            X_train_fill_WOA.iloc[j[0], j[1]] = round(best_search_agent.iloc[0, counter], round_digit)
+    """for j in range(X_train_fill_WOA.shape[0]):
+        for k in range(X_train_fill_WOA.shape[1]):
+            if pd.isnull(X_train_fill_WOA.iloc[j, k]) == True and counter < (best_search_agent.shape[1] - 3):
+                counter += 1
+                X_train_fill_WOA.iloc[j, k] = round(best_search_agent.iloc[0, counter], round_digit)"""
+
+    print("WOA train validation gap", best_search_agent.iloc[0, -3])
+    print("WOA validation accuracy", best_search_agent.iloc[0, -2])
+    print("WOA fitness", best_search_agent.iloc[0, -1])
+    print("WOA MAE", (mean_absolute_error(X_train_main, X_train_fill_WOA)))
+
+    print(obj_distancelist, obj_accuracylist)
+
+    return X_train_fill_WOA, fitnesslist, obj_distancelist, obj_accuracylist
+
+
+results = []
+best_parameters = []
+results.append(['Dataset', 'Missing_Percentage', 'ExperimentNo', 'RepeatNo','WOA_Accuracy_Train', 'WOA_Matthews_Corrcoef_Train',
+                'WOA_Accuracy_Test', 'WOA_Matthews_Corrcoef_Test', 'WOA_MAE', 'WOA_MSE', 'WOA_RMSE'])
+# plt.rcParams['xtick.labelsize'] = '5'
+# plt.rcParams['ytick.labelsize'] = '5'
+# fig, axes = plt.subplots(2,10)
+# fig2, axes2 = plt.subplots(2,10)
+# fig.subplots_adjust(left = 0.08,bottom = 0.1,right = 0.9,top = 0.93,wspace = 0.9,hspace = 0.5)
+# fig2.subplots_adjust(left = 0.08,bottom = 0.1,right = 0.9,top = 0.93,wspace = 0.9,hspace = 0.5)
+start=time.time()
+for missingpercentage in range(len(missing_percentage_list)):
+    for experiment in range(1, 2):
+        for repeatno in range(1,repeat_number+1):
+            X_train_main = pd.read_csv(
+                dataset_name + '_main_' + str(missing_percentage_list[missingpercentage]) + "_" + str(experiment))
+            X_train_main = X_train_main.iloc[:, 1:]  # delete first column
+            X_train = pd.read_csv(
+                dataset_name + '_train_' + str(missing_percentage_list[missingpercentage]) + "_" + str(experiment))
+            y_train = X_train.iloc[:, -1]  # last column as a target
+            X_train = X_train.iloc[:, 1:-1]
+            X_test = pd.read_csv(
+                dataset_name + '_test_' + str(missing_percentage_list[missingpercentage]) + "_" + str(experiment))
+            y_test = X_test.iloc[:, -1]
+            X_test = X_test.iloc[:, 1:-1]  # delete first and last column
+
+            dimension = X_train.isnull().sum().sum()
+            print(dimension)
+            ub = []  # where ub is the upper bound of variable n
+            lb = []  # where lb is the lower bound of variable n
+            missing_index = []
+            for j in range(X_train.shape[0]):
+                for k in range(X_train.shape[1]):
+                    if pd.isnull(X_train.iloc[j, k]) == True:
+                        missing_index.append([[j], [k]])
+            print(len(missing_index))
+            best_param=classifier_selection(scaler_name,classifier_name,X_train_main,y_train,X_test)[2]
+
+            best_parameters.append(best_param)
+
+            ub = []  # where ub is the upper bound of variable n
+            lb = []
+            for i in range(X_train.shape[0]):
+                for j in range(X_train.shape[1]):
+                    if pd.isnull(X_train.iloc[i, j]) == True:
+
+                        ub.append(X_train.iloc[:, j].max())
+                        lb.append(X_train.iloc[:, j].min())
+
+            X_train_fill_WOA, fitnesslist, obj_distancelist, obj_accuracylist = whale_optimization_algorithm(
+                num_searchagent, max_iter, dimension, ub, lb, X_train, y_train, X_test, y_test, round_digit,missing_index)
+
+            # iterlist = [i for i in range(max_iter + 1)]
+            """axes[0, (experiment-1)].set_title('Sample ' + str(experiment),fontsize=8)
+            axes[missingpercentage, (experiment-1)].set_ybound(min(fitnesslist),max(fitnesslist))
+            axes[missingpercentage, (experiment - 1)].yaxis.set_major_formatter(ticker.FormatStrFormatter('%.3f'))
+            axes[missingpercentage, (experiment - 1)].set_ylabel("$\it{Objective}$",fontsize=8)
+            axes[missingpercentage, (experiment - 1)].set_xlabel("$\it{Iteration}$",fontsize=8)
+            axes[missingpercentage, experiment-1].plot(iterlist,fitnesslist)
+            axes2[missingpercentage, (experiment - 1)].set_ybound(min(obj_accuracylist), max(obj_accuracylist))
+            axes2[missingpercentage, (experiment - 1)].set_xbound(min(obj_distancelist), max(obj_distancelist))
+            axes2[missingpercentage, (experiment - 1)].yaxis.set_major_formatter(ticker.FormatStrFormatter('%.3f'))
+            axes2[missingpercentage, (experiment - 1)].xaxis.set_major_formatter(ticker.FormatStrFormatter('%.3f'))
+            axes2[missingpercentage, (experiment - 1)].set_ylabel("$\it{Accuracy}$", fontsize=8,)
+            axes2[missingpercentage, (experiment - 1)].set_xlabel("$\it{Distance}$", fontsize=8)
+            axes2[0, (experiment - 1)].set_title('Sample ' + str(experiment),fontsize=8)
+            axes2[missingpercentage, (experiment - 1)].scatter(obj_distancelist,obj_accuracylist,s=5.0)"""
+
+            """plt.plot(iterlist, fitnesslist)
+            plt.xlabel("iteration")
+            plt.ylabel("objective")
+            plt.show()
+            plt.scatter(obj_distancelist, obj_accuracylist)
+            plt.xlabel("distance")
+            plt.ylabel("accuracy")"""
+
+            X_train_fill_WOA.to_excel(dataset_name + classifier_name + "woa_imputed_train" + str(
+                missing_percentage_list[missingpercentage]) + "_" + str(experiment) + ".xls")
+
+            scaler_two = MinMaxScaler()  # for train with train and validation
+            scaler = MinMaxScaler()
+            scaler.fit(X_train_fill_WOA)
+
+            X_train_fill_WOA_scaled = pd.DataFrame(scaler.transform(X_train_fill_WOA), index=X_train_fill_WOA.index,
+                                                   columns=X_train_fill_WOA.columns)
+            X_test_scaled = pd.DataFrame(scaler.transform(X_test), index=X_test.index, columns=X_test.columns)
+            model_woa = best_param
+
+            model_woa.fit(X_train_fill_WOA_scaled, y_train)
+            y_test_predict = model_woa.predict(X_test_scaled)
+            y_train_predict = model_woa.predict(X_train_fill_WOA_scaled)
+            print("imputation", accuracy_score(y_test, y_test_predict))
+
+            # print(classification_report(y_test, y_test_predict))
+            # confusion = plot_confusion_matrix(model_woa, X_test_scaled, y_test)
+            # print('Hata matrisi:\n', confusion.confusion_matrix)
+
+
+            # plt.rcParams['xtick.labelsize'] = '5'
+            results.append([dataset_name, missing_percentage_list[missingpercentage], experiment, repeatno,accuracy_score(y_test, y_test_predict),
+                            matthews_corrcoef(y_train, y_train_predict), accuracy_score(y_test, y_test_predict),
+                            matthews_corrcoef(y_test, y_test_predict),
+                            mean_absolute_error(X_train_main, X_train_fill_WOA),
+                            mean_squared_error(X_train_main, X_train_fill_WOA, squared=True),
+                            mean_squared_error(X_train_main, X_train_fill_WOA, squared=False)])
+
+
+            d = {'Train': obj_accuracylist, 'Test': obj_distancelist}
+            objvaluesiteration = pd.DataFrame(d)
+            print(objvaluesiteration)
+            print("---------------------------------------------------")
+            objvaluesiteration.to_excel(dataset_name + classifier_name + "woa_iteration" + str(missing_percentage_list[missingpercentage]) + "_" + timestr + "_" + str(experiment) + ".xls")
+
+
+
+result = pd.DataFrame(results)
+best_parameters_df = pd.DataFrame(best_parameters)
+#best_parameters_df.to_excel("woa_results_kfold_startmean" + dataset_name + classifier_name + "parameters" + "_" + timestr + ".xlsx")
+result.to_excel("woa_results_kfold_startmean" + dataset_name + classifier_name + "_" + timestr + ".xlsx")
+end=time.time()
+print(end-start,"time")
+# fig2.show()
+# fig.show()
+# plt.show()
+# --------------------------whale algorithm----------------------
+
+
+# print (stats.chisquare(X_train_fill_KNN,X_train_main))
